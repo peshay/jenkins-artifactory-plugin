@@ -37,10 +37,10 @@
         <enforcer.skip>true</enforcer.skip>
         <findbugs.failOnError>false</findbugs.failOnError>
 
-        <buildinfo.version>2.11.3</buildinfo.version>
-        <buildinfo.maven3.version>2.11.1</buildinfo.maven3.version>
-        <buildinfo.gradle.version>4.7.5</buildinfo.gradle.version>
-        <buildinfo.ivy.version>2.11.1</buildinfo.ivy.version>
+        <buildinfo.version>2.12.x-SNAPSHOT</buildinfo.version>
+        <buildinfo.maven3.version>2.12.1</buildinfo.maven3.version>
+        <buildinfo.gradle.version>4.8.x-SNAPSHOT</buildinfo.gradle.version>
+        <buildinfo.ivy.version>2.12.1</buildinfo.ivy.version>
     </properties>
 
     <developers>
@@ -123,6 +123,11 @@
             <groupId>org.jenkins-ci.plugins</groupId>
             <artifactId>ivy</artifactId>
             <version>1.17</version>
+        </dependency>
+        <dependency>
+            <groupId>org.jenkins-ci.plugins</groupId>
+            <artifactId>matrix-project</artifactId>
+            <version>1.10</version>
         </dependency>
         <dependency>
             <groupId>org.jenkins-ci.plugins</groupId>
