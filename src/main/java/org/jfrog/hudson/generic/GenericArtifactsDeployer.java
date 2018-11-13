@@ -95,7 +95,7 @@ public class GenericArtifactsDeployer {
 
     private ArrayListMultimap<String, String> getbuildPropertiesMap() {
         ArrayListMultimap<String, String> properties = ArrayListMultimap.create();
-        String buildName = BuildUniqueIdentifierHelper.getBuildNameConsiderOverride(configurator, build);
+        String buildName = BuildUniqueIdentifierHelper.getBuildNameConsiderOverride(configurator, build, env);
         properties.put("build.name", buildName);
         properties.put("build.number", BuildUniqueIdentifierHelper.getBuildNumber(build));
         properties.put("build.timestamp", build.getTimestamp().getTime().getTime() + "");

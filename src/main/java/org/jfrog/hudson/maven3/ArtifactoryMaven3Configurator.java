@@ -22,6 +22,7 @@ import hudson.Launcher;
 import hudson.matrix.MatrixConfiguration;
 import hudson.matrix.MatrixProject;
 import hudson.model.*;
+import hudson.EnvVars;
 import hudson.tasks.BuildWrapper;
 import hudson.tasks.BuildWrapperDescriptor;
 import hudson.util.FormValidation;
@@ -500,7 +501,7 @@ public class ArtifactoryMaven3Configurator extends BuildWrapper implements Deplo
             public boolean tearDown(AbstractBuild build, BuildListener listener) {
                 Result result = build.getResult();
                 if (deployBuildInfo && result != null && result.isBetterOrEqualTo(Result.SUCCESS)) {
-                    String buildName = BuildUniqueIdentifierHelper.getBuildNameConsiderOverride(ArtifactoryMaven3Configurator.this, build);
+                    String buildName = BuildUniqueIdentifierHelper.getBuildNameConsiderOverride(ArtifactoryMaven3Configurator.this, build, null);
                     build.getActions().add(new BuildInfoResultAction(getArtifactoryUrl(), build, buildName));
                     build.getActions().add(new UnifiedPromoteBuildAction(build, ArtifactoryMaven3Configurator.this));
                     // Checks if Push to Bintray is disabled.

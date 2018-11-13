@@ -24,6 +24,7 @@ import hudson.Launcher;
 import hudson.matrix.MatrixConfiguration;
 import hudson.matrix.MatrixProject;
 import hudson.model.*;
+import hudson.EnvVars;
 import hudson.remoting.Which;
 import hudson.tasks.Ant;
 import hudson.tasks.BuildWrapper;
@@ -449,7 +450,8 @@ public class ArtifactoryIvyFreeStyleConfigurator extends BuildWrapper implements
 
                 if (!finalPublisherContext.isSkipBuildInfoDeploy() && (result == null ||
                         result.isBetterOrEqualTo(Result.SUCCESS))) {
-                    String buildName = BuildUniqueIdentifierHelper.getBuildNameConsiderOverride(ArtifactoryIvyFreeStyleConfigurator.this, build);
+                    EnvVars env = build.getEnvironment(listener);
+                    String buildName = BuildUniqueIdentifierHelper.getBuildNameConsiderOverride(ArtifactoryIvyFreeStyleConfigurator.this, build, env);
                     build.getActions().add(0, new BuildInfoResultAction(getArtifactoryUrl(), build, buildName));
                     build.getActions().add(new UnifiedPromoteBuildAction(build, ArtifactoryIvyFreeStyleConfigurator.this));
                     // Checks if Push to Bintray is disabled.
