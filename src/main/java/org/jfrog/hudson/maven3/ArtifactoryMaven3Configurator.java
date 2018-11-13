@@ -20,6 +20,7 @@ import hudson.Extension;
 import hudson.Launcher;
 import hudson.matrix.MatrixConfiguration;
 import hudson.model.*;
+import hudson.EnvVars;
 import hudson.tasks.BuildWrapper;
 import hudson.util.ListBoxModel;
 import hudson.util.XStream2;
@@ -394,7 +395,7 @@ public class ArtifactoryMaven3Configurator extends BuildWrapper implements Deplo
             public boolean tearDown(AbstractBuild build, BuildListener listener) {
                 Result result = build.getResult();
                 if (deployBuildInfo && result != null && result.isBetterOrEqualTo(Result.SUCCESS)) {
-                    String buildName = BuildUniqueIdentifierHelper.getBuildNameConsiderOverride(ArtifactoryMaven3Configurator.this, build);
+                    String buildName = BuildUniqueIdentifierHelper.getBuildNameConsiderOverride(ArtifactoryMaven3Configurator.this, build, null);
                     build.getActions().add(new BuildInfoResultAction(getArtifactoryUrl(), build, buildName));
                     build.getActions().add(new UnifiedPromoteBuildAction(build, ArtifactoryMaven3Configurator.this));
                 }
