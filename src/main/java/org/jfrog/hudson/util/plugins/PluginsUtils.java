@@ -27,18 +27,19 @@ import java.util.Map;
 public class PluginsUtils {
     public static final String MULTIJOB_PLUGIN_ID = "jenkins-multijob-plugin";
     public static final String GIT_PLUGIN_ID = "git";
+    public static final String PROMOTION_BUILD_PLUGIN_CLASS = "PromotionProcess";
     public static final String JIRA_REST_SERVERINFO_ENDPOINT = "rest/api/2/serverInfo";
 
     private static ObjectMapper mapper;
 
     public static ListBoxModel fillPluginCredentials(Item project) {
+        if (project == null || !project.hasPermission(Item.CONFIGURE)) {
+            return new StandardListBoxModel();
+        }
         return fillPluginCredentials(project, ACL.SYSTEM);
     }
 
     public static ListBoxModel fillPluginCredentials(Item project, Authentication authentication) {
-        if (project != null && !project.hasPermission(Item.CONFIGURE)) {
-            return new StandardListBoxModel();
-        }
         List<DomainRequirement> domainRequirements = Collections.emptyList();
         return new StandardListBoxModel()
                 .withEmptySelection()
