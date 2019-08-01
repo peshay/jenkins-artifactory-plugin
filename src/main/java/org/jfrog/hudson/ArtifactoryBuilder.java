@@ -16,11 +16,9 @@
 
 package org.jfrog.hudson;
 
+import com.cloudbees.plugins.credentials.common.StandardListBoxModel;
 import hudson.Extension;
-import hudson.model.AbstractProject;
-import hudson.model.BuildableItemWithBuildWrappers;
-import hudson.model.Descriptor;
-import hudson.model.Item;
+import hudson.model.*;
 import hudson.security.ACL;
 import hudson.util.FormValidation;
 import hudson.util.ListBoxModel;
@@ -39,6 +37,7 @@ import org.jfrog.hudson.util.plugins.PluginsUtils;
 import org.kohsuke.stapler.AncestorInPath;
 import org.kohsuke.stapler.QueryParameter;
 import org.kohsuke.stapler.StaplerRequest;
+import org.kohsuke.stapler.interceptor.RequirePOST;
 
 import javax.servlet.ServletException;
 import java.io.IOException;
@@ -72,8 +71,13 @@ public class ArtifactoryBuilder extends GlobalConfiguration {
         }
 
         @SuppressWarnings("unused")
+        @RequirePOST
         public ListBoxModel doFillCredentialsIdItems(@AncestorInPath Item project) {
-            return PluginsUtils.fillPluginCredentials(project, ACL.SYSTEM);
+            Jenkins jenkins = Jenkins.getInstance();
+            if (jenkins != null && jenkins.hasPermission(Jenkins.ADMINISTER)) {
+                return PluginsUtils.fillPluginCredentials(project, ACL.SYSTEM);
+            }
+            return new StandardListBoxModel();
         }
 
         /**
@@ -119,6 +123,7 @@ public class ArtifactoryBuilder extends GlobalConfiguration {
             return FormValidation.ok();
         }
 
+        @RequirePOST
         public FormValidation doTestConnection(
                 @QueryParameter("artifactoryUrl") final String url,
                 @QueryParameter("artifactory.timeout") final String timeout,
@@ -130,11 +135,12 @@ public class ArtifactoryBuilder extends GlobalConfiguration {
                 @QueryParameter("connectionRetry") final int connectionRetry
 
         ) throws ServletException {
-
+            if (!Jenkins.getInstance().hasPermission(Jenkins.ADMINISTER)) {
+                return FormValidation.error("Testing the connection requires 'Administer' permission");
+            }
             if (StringUtils.isBlank(url)) {
                 return FormValidation.error("Please set a valid Artifactory URL");
             }
-
             if (connectionRetry < 0) {
                 return FormValidation.error("Connection Retries can not be less then 0");
             }
@@ -185,32 +191,36 @@ public class ArtifactoryBuilder extends GlobalConfiguration {
         @SuppressWarnings({"unchecked"})
         @Override
         public boolean configure(StaplerRequest req, JSONObject o) throws FormException {
-            boolean useCredentialsPlugin = (Boolean)o.get("useCredentialsPlugin");
-            Object servers = o.get("artifactoryServer");    // an array or single object
-            List<ArtifactoryServer> artifactoryServers;
-            if (!JSONNull.getInstance().equals(servers)) {
-                artifactoryServers = req.bindJSONToList(ArtifactoryServer.class, servers);
-            } else {
-                artifactoryServers = null;
-            }
+            Jenkins jenkins = Jenkins.getInstance();
+            if (jenkins != null && jenkins.hasPermission(Jenkins.ADMINISTER)) {
+                boolean useCredentialsPlugin = (Boolean) o.get("useCredentialsPlugin");
+                Object servers = o.get("artifactoryServer");    // an array or single object
+                List<ArtifactoryServer> artifactoryServers;
+                if (!JSONNull.getInstance().equals(servers)) {
+                    artifactoryServers = req.bindJSONToList(ArtifactoryServer.class, servers);
+                } else {
+                    artifactoryServers = null;
+                }
 
-            if (!isServerIDConfigured(artifactoryServers)) {
-                throw new FormException("Please set the Artifactory server ID.", "ServerID");
-            }
+                if (!isServerIDConfigured(artifactoryServers)) {
+                    throw new FormException("Please set the Artifactory server ID.", "ServerID");
+                }
 
-            if (isServerDuplicated(artifactoryServers)) {
-                throw new FormException("The Artifactory server ID you have entered is already configured", "Server ID");
-            }
+                if (isServerDuplicated(artifactoryServers)) {
+                    throw new FormException("The Artifactory server ID you have entered is already configured", "Server ID");
+                }
 
-            setArtifactoryServers(artifactoryServers);
+                setArtifactoryServers(artifactoryServers);
 
-            if (useCredentialsPlugin && !this.useCredentialsPlugin) {
-                resetJobsCredentials();
-                resetServersCredentials();
+                if (useCredentialsPlugin && !this.useCredentialsPlugin) {
+                    resetJobsCredentials();
+                    resetServersCredentials();
+                }
+                this.useCredentialsPlugin = useCredentialsPlugin;
+                save();
+                return super.configure(req, o);
             }
-            this.useCredentialsPlugin = useCredentialsPlugin;
-            save();
-            return super.configure(req, o);
+            throw new FormException("User doesn't have permissions to save", "Server ID");
         }
 
         private void resetServersCredentials() {
@@ -226,7 +236,7 @@ public class ArtifactoryBuilder extends GlobalConfiguration {
 
         private void resetJobsCredentials() {
             List<AbstractProject> jobs = Jenkins.getInstance().getAllItems(AbstractProject.class);
-            for(AbstractProject job : jobs) {
+            for (AbstractProject job : jobs) {
                 if (!(job instanceof BuildableItemWithBuildWrappers)) {
                     continue;
                 }

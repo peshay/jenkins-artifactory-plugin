@@ -6,6 +6,8 @@ import org.apache.commons.io.IOUtils;
 import org.apache.commons.lang.text.StrSubstitutor;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.exception.ExceptionUtils;
+import org.apache.log4j.LogManager;
+import org.apache.log4j.Logger;
 import org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition;
 import org.jenkinsci.plugins.workflow.job.WorkflowJob;
 import org.jenkinsci.plugins.workflow.job.WorkflowRun;
@@ -16,6 +18,7 @@ import org.jfrog.artifactory.client.impl.ArtifactoryRequestImpl;
 import org.jfrog.build.api.util.NullLog;
 import org.jfrog.build.extractor.clientConfiguration.client.ArtifactoryBuildInfoClient;
 import org.junit.*;
+import org.junit.rules.TestName;
 import org.jvnet.hudson.test.JenkinsRule;
 
 import java.io.File;
@@ -23,8 +26,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.Arrays;
-import java.util.HashMap;
+import java.util.*;
 
 import static org.jfrog.hudson.pipeline.integration.ITestUtils.*;
 import static org.junit.Assert.fail;
@@ -36,6 +38,8 @@ public class PipelineTestBase {
 
     @ClassRule // The Jenkins instance
     public static JenkinsRule jenkins = new JenkinsRule();
+    private Logger log = LogManager.getRootLogger();
+    @Rule public TestName testName = new TestName();
 
     private static final String ARTIFACTORY_URL = System.getenv("JENKINS_ARTIFACTORY_URL");
     private static final String ARTIFACTORY_USERNAME = System.getenv("JENKINS_ARTIFACTORY_USERNAME");
@@ -64,7 +68,9 @@ public class PipelineTestBase {
     }
 
     @Before
-    public void createRepos() {
+    public void beforeTest() {
+        log.info("Running test: " + pipelineType + " / " + testName.getMethodName());
+        // Create repositories
         Arrays.stream(TestRepository.values()).forEach(this::createRepo);
     }
 
@@ -131,10 +137,12 @@ public class PipelineTestBase {
     private static void createPipelineSubstitution() {
         pipelineSubstitution = new StrSubstitutor(new HashMap<String, String>() {{
             put("FILES_DIR", fixWindowsPath(FILES_PATH.toString() + File.separator + "*"));
+            put("FILES_DIR_1", fixWindowsPath(FILES_PATH.toString() + File.separator + "1" + File.separator + "*"));
             put("MAVEN_PROJECT_PATH", getProjectPath("maven-example"));
             put("GRADLE_PROJECT_PATH", getProjectPath("gradle-example"));
             put("GRADLE_CI_PROJECT_PATH", getProjectPath("gradle-example-ci"));
             put("NPM_PROJECT_PATH", getProjectPath("npm-example"));
+            put("DOCKER_PROJECT_PATH", getProjectPath("docker-example"));
             put("LOCAL_REPO1", getRepoKey(TestRepository.LOCAL_REPO1));
             put("LOCAL_REPO2", getRepoKey(TestRepository.LOCAL_REPO2));
             put("JCENTER_REMOTE_REPO", getRepoKey(TestRepository.JCENTER_REMOTE_REPO));
@@ -149,7 +157,7 @@ public class PipelineTestBase {
      * @param projectName - The project name - 'maven-example', 'gradle-example', etc.
      * @return the specific test source files dir
      */
-    private static String getProjectPath(String projectName) {
+    static String getProjectPath(String projectName) {
         Path projectPath = getIntegrationDir().resolve(projectName).toAbsolutePath();
         return fixWindowsPath(projectPath.toString());
     }
@@ -207,5 +215,25 @@ public class PipelineTestBase {
         EnvVars envVars = prop.getEnvVars();
         envVars.put("ARTIFACTORY_JARS_LIB", Paths.get("target", "artifactory", "WEB-INF", "lib").toAbsolutePath().toString());
         jenkins.jenkins.getGlobalNodeProperties().add(prop);
+    }
+
+    /**
+     * Returns a set of the files names in a layer of the FILES_PATH directory.
+     * Base = layer 0.
+     */
+    Set<String> getTestFilesNamesByLayer(int layer) {
+        Set<String> names = new HashSet<>();
+        String pathStr = FILES_PATH.toString();
+        pathStr += layer == 0 ? "" : File.separator + layer;
+
+        File folder = new File(pathStr);
+        File[] listOfFiles = folder.listFiles();
+        assert listOfFiles != null;
+        for (File file : listOfFiles) {
+            if (file.isFile()) {
+                names.add(file.getName());
+            }
+        }
+        return names;
     }
 }
