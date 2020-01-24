@@ -21,9 +21,7 @@ import jenkins.plugins.nodejs.tools.NodeJSInstallation;
 import jenkins.security.MasterToSlaveCallable;
 import org.apache.commons.io.IOUtils;
 import org.apache.commons.lang.StringUtils;
-import org.eclipse.jgit.internal.storage.file.FileRepository;
-import org.eclipse.jgit.lib.Constants;
-import org.eclipse.jgit.lib.ObjectId;
+import org.apache.commons.lang3.exception.ExceptionUtils;
 import org.jenkinsci.plugins.workflow.cps.CpsScript;
 import org.jenkinsci.plugins.workflow.steps.StepContext;
 import org.jfrog.build.api.BuildInfoFields;
@@ -31,6 +29,7 @@ import org.jfrog.build.api.Vcs;
 import org.jfrog.build.api.util.Log;
 import org.jfrog.build.client.ProxyConfiguration;
 import org.jfrog.build.extractor.clientConfiguration.IncludeExcludePatterns;
+import org.jfrog.build.extractor.clientConfiguration.util.GitUtils;
 import org.jfrog.hudson.CredentialsConfig;
 import org.jfrog.hudson.action.ActionableHelper;
 import org.jfrog.hudson.pipeline.common.types.ArtifactoryServer;
@@ -80,11 +79,7 @@ public class Utils {
             return new org.jfrog.hudson.ArtifactoryServer(null, pipelineServer.getUrl(), credentials,
                     credentials, pipelineServer.getConnection().getTimeout(), pipelineServer.isBypassProxy(), pipelineServer.getConnection().getRetry(), pipelineServer.getDeploymentThreads());
         }
-        org.jfrog.hudson.ArtifactoryServer server = RepositoriesUtils.getArtifactoryServer(artifactoryServerID, RepositoriesUtils.getArtifactoryServers());
-        if (server == null) {
-            return null;
-        }
-        return server;
+        return RepositoriesUtils.getArtifactoryServer(artifactoryServerID, RepositoriesUtils.getArtifactoryServers());
     }
 
     public static BuildInfo prepareBuildinfo(Run build, BuildInfo buildinfo) {
@@ -139,21 +134,12 @@ public class Utils {
         return result;
     }
 
-    public static String extractVcsRevision(FilePath filePath) throws IOException, InterruptedException {
-        if (filePath == null) {
-            return "";
-        }
-        FilePath dotGitPath = new FilePath(filePath, ".git");
-        if (dotGitPath.exists()) {
-            return dotGitPath.act(new MasterToSlaveFileCallable<String>() {
-                public String invoke(File f, VirtualChannel channel) throws IOException, InterruptedException {
-                    FileRepository repository = new FileRepository(f);
-                    ObjectId head = repository.resolve(Constants.HEAD);
-                    return head.getName();
-                }
-            });
-        }
-        return extractVcsRevision(filePath.getParent());
+    public static Vcs extractVcs(FilePath filePath, Log log) throws IOException, InterruptedException {
+        return filePath.act(new MasterToSlaveFileCallable<Vcs>() {
+            public Vcs invoke(File f, VirtualChannel channel) throws IOException {
+                return GitUtils.extractVcs(f, log);
+            }
+        });
     }
 
     public static Computer getCurrentComputer(Launcher launcher) {
@@ -237,11 +223,10 @@ public class Utils {
         });
     }
 
-    public static void exeConan(ArgumentListBuilder args, FilePath pwd, Launcher launcher, TaskListener listener, Run build, EnvVars env) {
-        boolean failed;
+    public static void exeConan(ArgumentListBuilder args, FilePath ws, Launcher launcher, TaskListener listener, EnvVars env) {
         try {
-            if (!pwd.exists()) {
-                pwd.mkdirs();
+            if (!ws.exists()) {
+                ws.mkdirs();
             }
             if (launcher.isUnix()) {
                 boolean hasMaskedArguments = args.hasMaskedArguments();
@@ -259,17 +244,47 @@ public class Utils {
             } else {
                 args = args.toWindowsCommand();
             }
-            int exitValue = launcher.launch().cmds(args).envs(env).stdout(listener).stderr(listener.getLogger()).pwd(pwd).join();
-            failed = (exitValue != 0);
         } catch (Exception e) {
             listener.error("Couldn't execute the conan client executable. " + e.getMessage());
-            build.setResult(Result.FAILURE);
             throw new Run.RunnerAbortedException();
+        }
+        launch("Conan", launcher, args, env, listener, ws);
+    }
+
+    /**
+     * Launch a process. Throw a RuntimeException in case of an error.
+     *
+     * @param taskName - The task name - Maven, Gradle, npm, etc.
+     * @param launcher - The launcher
+     * @param args     - The arguments
+     * @param env      - Task environment
+     * @param listener - Task listener
+     * @param ws       - The workspace
+     */
+    public static void launch(String taskName, Launcher launcher, ArgumentListBuilder args, EnvVars env, TaskListener listener, FilePath ws) {
+        boolean failed;
+        try {
+            int exitValue = launcher.launch().cmds(args).envs(env).stdout(listener).stderr(listener.getLogger()).pwd(ws).join();
+            failed = (exitValue != 0);
+        } catch (Exception e) {
+            listener.error("Couldn't execute " + taskName + " task. " + ExceptionUtils.getMessage(e));
+            failed = true;
         }
         if (failed) {
-            build.setResult(Result.FAILURE);
-            throw new Run.RunnerAbortedException();
+            throw new RuntimeException(taskName + " build failed");
         }
+    }
+
+    public static String getJavaPathBuilder(String jdkBinPath, Launcher launcher) {
+        StringBuilder javaPathBuilder = new StringBuilder();
+        if (StringUtils.isNotBlank(jdkBinPath)) {
+            javaPathBuilder.append(jdkBinPath).append("/");
+        }
+        javaPathBuilder.append("java");
+        if (!launcher.isUnix()) {
+            javaPathBuilder.append(".exe");
+        }
+        return javaPathBuilder.toString();
     }
 
     public static String escapeUnixArgument(String arg) {
@@ -347,14 +362,13 @@ public class Utils {
      * @param stepVariables step variables map
      * @return the build info
      */
-    public static BuildInfo appendBuildInfo(CpsScript cpsScript, Map<String, Object> stepVariables) {
+    public static void appendBuildInfo(CpsScript cpsScript, Map<String, Object> stepVariables) {
         BuildInfo buildInfo = (BuildInfo) stepVariables.get(BUILD_INFO);
         if (buildInfo == null) {
             buildInfo = (BuildInfo) cpsScript.invokeMethod("newBuildInfo", Maps.newLinkedHashMap());
             stepVariables.put(BUILD_INFO, buildInfo);
         }
         buildInfo.setCpsScript(cpsScript);
-        return buildInfo;
     }
 
     public static ProxyConfiguration getProxyConfiguration(org.jfrog.hudson.ArtifactoryServer server) {
@@ -368,27 +382,39 @@ public class Utils {
         ArrayListMultimap<String, String> properties = ArrayListMultimap.create();
 
         if (buildInfo.getName() != null) {
-            properties.put("build.name", buildInfo.getName());
+            properties.put(BuildInfoFields.BUILD_NAME, buildInfo.getName());
         } else {
-            properties.put("build.name", BuildUniqueIdentifierHelper.getBuildName(build));
+            properties.put(BuildInfoFields.BUILD_NAME, BuildUniqueIdentifierHelper.getBuildName(build));
         }
         if (buildInfo.getNumber() != null) {
-            properties.put("build.number", buildInfo.getNumber());
+            properties.put(BuildInfoFields.BUILD_NUMBER, buildInfo.getNumber());
         } else {
-            properties.put("build.number", BuildUniqueIdentifierHelper.getBuildNumber(build));
+            properties.put(BuildInfoFields.BUILD_NUMBER, BuildUniqueIdentifierHelper.getBuildNumber(build));
         }
-        properties.put("build.timestamp", build.getTimestamp().getTime().getTime() + "");
+        properties.put(BuildInfoFields.BUILD_TIMESTAMP, build.getTimestamp().getTime().getTime() + "");
+        addParentBuildProps(properties, build);
+        EnvVars env = context.get(EnvVars.class);
+        addVcsDetailsToProps(env, properties);
+        return properties;
+    }
+
+    public static void addParentBuildProps(ArrayListMultimap<String, String> properties, Run build) {
         Cause.UpstreamCause parent = ActionableHelper.getUpstreamCause(build);
         if (parent != null) {
-            properties.put("build.parentName", ExtractorUtils.sanitizeBuildName(parent.getUpstreamProject()));
-            properties.put("build.parentNumber", parent.getUpstreamBuild() + "");
+            properties.put(BuildInfoFields.BUILD_PARENT_NAME, ExtractorUtils.sanitizeBuildName(parent.getUpstreamProject()));
+            properties.put(BuildInfoFields.BUILD_PARENT_NUMBER, parent.getUpstreamBuild() + "");
         }
-        EnvVars env = context.get(EnvVars.class);
+    }
+
+    public static void addVcsDetailsToProps(EnvVars env, ArrayListMultimap<String, String> properties) {
         String revision = ExtractorUtils.getVcsRevision(env);
         if (StringUtils.isNotBlank(revision)) {
             properties.put(BuildInfoFields.VCS_REVISION, revision);
         }
-        return properties;
+        String gitUrl = ExtractorUtils.getVcsUrl(env);
+        if (StringUtils.isNotBlank(gitUrl)) {
+            properties.put(BuildInfoFields.VCS_URL, gitUrl);
+        }
     }
 
     public static String replaceTildeWithUserHome(String path) {

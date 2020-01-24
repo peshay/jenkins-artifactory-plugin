@@ -17,8 +17,8 @@
 #   3. Override 'JENKINS_ARTIFACTORY_PASSWORD' with variable encryption.
 
 image:
-  - Visual Studio 2017
   - Ubuntu
+  - Visual Studio 2017
 stack: jdk 8, node 8
 skip_tags: true
 environment:
@@ -34,6 +34,8 @@ environment:
     ecosysjfrog-docker-jenkins-tests.jfrog.io
   JENKINS_ARTIFACTORY_DOCKER_REPO:
     docker-jenkins-tests
+  JENKINS_DOCKER_TEST_ENABLE:
+    false
 services:
   - docker
 before_test:
@@ -42,8 +44,8 @@ before_test:
   - cmd: refreshenv
   - sh: curl -s "https://get.sdkman.io" | bash
   - sh: source "/home/appveyor/.sdkman/bin/sdkman-init.sh"
-  - sh: export MAVEN_HOME=/home/appveyor/.sdkman/candidates/maven/current && sdk install maven 3.3.9
-  - sh: export GRADLE_HOME=/home/appveyor/.sdkman/candidates/gradle/current && sdk install gradle
+  - sh: export MAVEN_HOME=/home/appveyor/.sdkman/candidates/maven/current && sdk use maven 3.3.9 || sdk install maven 3.3.9
+  - sh: export GRADLE_HOME=/home/appveyor/.sdkman/candidates/gradle/current && sdk default gradle || sdk install gradle
   - sh: touch tests.log
   - sh: tail -f tests.log &
 

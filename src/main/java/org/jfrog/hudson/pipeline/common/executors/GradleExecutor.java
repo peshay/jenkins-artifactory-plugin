@@ -18,7 +18,7 @@ import org.jfrog.hudson.gradle.GradleInitScriptWriter;
 import org.jfrog.hudson.pipeline.common.Utils;
 import org.jfrog.hudson.pipeline.common.types.buildInfo.BuildInfo;
 import org.jfrog.hudson.pipeline.common.types.deployers.Deployer;
-import org.jfrog.hudson.pipeline.common.types.packageManagerBuilds.GradleBuild;
+import org.jfrog.hudson.pipeline.common.types.builds.GradleBuild;
 import org.jfrog.hudson.util.ExtractorUtils;
 
 import java.io.IOException;
@@ -58,15 +58,14 @@ public class GradleExecutor implements Executor {
         buildInfo = Utils.prepareBuildinfo(build, buildInfo);
         Deployer deployer = gradleBuild.getDeployer();
         deployer.createPublisherBuildInfoDetails(buildInfo);
-        String revision = Utils.extractVcsRevision(new FilePath(ws, rootDir));
         extendedEnv = new EnvVars(env);
-        extendedEnv.put(ExtractorUtils.GIT_COMMIT, revision);
+        ExtractorUtils.addVcsDetailsToEnv(new FilePath(ws, rootDir), extendedEnv, listener);
         tempDir = ExtractorUtils.createAndGetTempDir(ws);
-        MavenGradleEnvExtractor envExtractor = new MavenGradleEnvExtractor(build,
+        EnvExtractor envExtractor = new MavenGradleEnvExtractor(build,
                 buildInfo, deployer, gradleBuild.getResolver(), listener, launcher, tempDir, extendedEnv);
         envExtractor.execute();
         ArgumentListBuilder args = getGradleExecutor();
-        exe(args);
+        Utils.launch("Gradle", launcher, args, extendedEnv, listener, ws);
         String generatedBuildPath = extendedEnv.get(BuildInfoFields.GENERATED_BUILD_INFO);
         buildInfo.append(Utils.getGeneratedBuildInfo(build, listener, launcher, generatedBuildPath));
         ActionableHelper.deleteFilePath(tempDir, initScriptPath);
@@ -128,21 +127,6 @@ public class GradleExecutor implements Executor {
             }
         }
         return switches;
-    }
-
-    private void exe(ArgumentListBuilder args) {
-        boolean failed;
-        try {
-            int exitValue = launcher.launch().cmds(args).envs(extendedEnv).stdout(listener).stderr(listener.getLogger()).pwd(ws).join();
-            failed = (exitValue != 0);
-        } catch (Exception e) {
-            listener.error("Couldn't execute gradle task. " + e.getMessage());
-            failed = true;
-        }
-        if (failed) {
-            build.setResult(Result.FAILURE);
-            throw new Run.RunnerAbortedException();
-        }
     }
 
     private GradleInstallation getGradleInstallation() {
