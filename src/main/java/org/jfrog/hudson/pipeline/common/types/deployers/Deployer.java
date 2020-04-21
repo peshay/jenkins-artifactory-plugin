@@ -4,6 +4,7 @@ import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.google.common.collect.ArrayListMultimap;
 import com.google.common.collect.Sets;
 import hudson.FilePath;
+import hudson.model.Run;
 import hudson.model.TaskListener;
 import hudson.remoting.VirtualChannel;
 import jenkins.MasterToSlaveFileCallable;
@@ -33,6 +34,8 @@ import java.io.Serializable;
 import java.security.NoSuchAlgorithmException;
 import java.util.*;
 
+import static org.jfrog.build.extractor.ModuleParallelDeployHelper.DEFAULT_DEPLOYMENT_THREADS;
+
 /**
  * Created by Tamirh on 04/08/2016.
  */
@@ -42,6 +45,7 @@ public abstract class Deployer implements DeployerOverrider, Serializable {
     private ArrayListMultimap<String, String> properties = ArrayListMultimap.create();
     private Filter artifactDeploymentPatterns = new Filter();
     private String customBuildName = "";
+    private int threads = DEFAULT_DEPLOYMENT_THREADS;
     private transient CpsScript cpsScript;
 
     protected transient ArtifactoryServer server;
@@ -79,6 +83,17 @@ public abstract class Deployer implements DeployerOverrider, Serializable {
     @Whitelisted
     public Deployer setDeployArtifacts(boolean deployArtifacts) {
         this.deployArtifacts = deployArtifacts;
+        return this;
+    }
+
+    @Whitelisted
+    public int getThreads() {
+        return threads;
+    }
+
+    @Whitelisted
+    public Deployer setThreads(int threads) {
+        this.threads = threads;
         return this;
     }
 
@@ -147,9 +162,9 @@ public abstract class Deployer implements DeployerOverrider, Serializable {
         this.customBuildName = customBuildName;
     }
 
-    public abstract ServerDetails getDetails();
+    public abstract ServerDetails getDetails() throws IOException;
 
-    public abstract PublisherContext.Builder getContextBuilder();
+    public abstract PublisherContext.Builder getContextBuilder() throws IOException;
 
     public abstract boolean isEmpty();
 
@@ -171,68 +186,80 @@ public abstract class Deployer implements DeployerOverrider, Serializable {
         cpsScript.invokeMethod("deployArtifacts", stepVariables);
     }
 
-    public void deployArtifacts(BuildInfo buildInfo, TaskListener listener, FilePath ws) throws IOException, InterruptedException {
-        if (buildInfo.getDeployableArtifacts().isEmpty()) {
+    public void deployArtifacts(BuildInfo buildInfo, TaskListener listener, FilePath ws, Run build) throws IOException, InterruptedException {
+        if (buildInfo.getDeployableArtifactsByModule().isEmpty()) {
             listener.getLogger().println("No artifacts for deployment were found");
             return;
         }
         String agentName = Utils.getAgentName(ws);
         if (buildInfo.getAgentName().equals(agentName)) {
             org.jfrog.hudson.ArtifactoryServer artifactoryServer = Utils.prepareArtifactoryServer(null, server);
-            Credentials credentials = getDeployerCredentialsConfig().getCredentials(null);
+            Credentials credentials = getDeployerCredentialsConfig().provideCredentials(build.getParent());
+            if (credentials == Credentials.EMPTY_CREDENTIALS) {
+                throw new RuntimeException(String.format(
+                        "No matching credentials was found in Jenkins for the supplied credentialsId: '%s' ",
+                        getDeployerCredentialsConfig().getCredentialsId()));
+            }
             org.jfrog.build.client.ProxyConfiguration proxy = RepositoriesUtils.createProxyConfiguration(Jenkins.getInstance().proxy);
-            Set<DeployDetails> deploySet = ws.act(new DeployDetailsCallable(buildInfo.getDeployableArtifacts(), listener, this));
-            if (deploySet != null && deploySet.size() > 0) {
-                ws.act(new GenericArtifactsDeployer.FilesDeployerCallable(listener, deploySet, artifactoryServer, credentials, proxy));
-            } else if (deploySet == null) {
+            Map<String, Set<DeployDetails>> deployableArtifactsByModule = ws.act(new DeployDetailsCallable(buildInfo.getDeployableArtifactsByModule(), listener, this));
+            if (deployableArtifactsByModule == null) {
                 throw new RuntimeException("Deployment failed");
+            }
+            if (!deployableArtifactsByModule.isEmpty()) {
+                ws.act(new GenericArtifactsDeployer.FilesDeployerCallable(listener, deployableArtifactsByModule, artifactoryServer, credentials, proxy, getThreads()));
             }
         } else {
             throw new RuntimeException("Cannot deploy the files from agent: " + agentName + " since they were built on agent: " + buildInfo.getAgentName());
         }
     }
 
-    public static class DeployDetailsCallable extends MasterToSlaveFileCallable<Set<DeployDetails>> {
+    public static class DeployDetailsCallable extends MasterToSlaveFileCallable<Map<String, Set<DeployDetails>>> {
         private static final String SHA1 = "SHA1";
         private static final String MD5 = "MD5";
-        private List<DeployDetails> deployableArtifactsPaths;
+        private Map<String, List<DeployDetails>> deployableArtifactsPaths;
         private TaskListener listener;
         private Deployer deployer;
 
-        DeployDetailsCallable(List<DeployDetails> deployableArtifactsPaths, TaskListener listener, Deployer deployer) {
+        DeployDetailsCallable(Map<String, List<DeployDetails>> deployableArtifactsPaths, TaskListener listener, Deployer deployer) {
             this.deployableArtifactsPaths = deployableArtifactsPaths;
             this.listener = listener;
             this.deployer = deployer;
         }
 
-        public Set<DeployDetails> invoke(File file, VirtualChannel virtualChannel) throws IOException {
+        public Map<String, Set<DeployDetails>> invoke(File file, VirtualChannel virtualChannel) throws IOException {
             boolean isSuccess = true;
-            Set<DeployDetails> results = Sets.newLinkedHashSet();
-            try {
-                for (DeployDetails artifact : deployableArtifactsPaths) {
-                    String artifactPath = artifact.getArtifactPath();
-                    if (PatternMatcher.pathConflicts(artifactPath, deployer.getArtifactDeploymentPatterns().getPatternFilter())) {
-                        listener.getLogger().println("Artifactory Deployer: Skipping the deployment of '" + artifactPath + "' due to the defined include-exclude patterns.");
-                        continue;
+            Map<String, Set<DeployDetails>> results = new LinkedHashMap<>();
+            for (Map.Entry<String, List<DeployDetails>> entry : deployableArtifactsPaths.entrySet()) {
+                String module = entry.getKey();
+                List<DeployDetails> paths = entry.getValue();
+                try {
+                    Set<DeployDetails> deployDetails = Sets.newLinkedHashSet();
+                    for (DeployDetails artifact : paths) {
+                        String artifactPath = artifact.getArtifactPath();
+                        if (PatternMatcher.pathConflicts(artifactPath, deployer.getArtifactDeploymentPatterns().getPatternFilter())) {
+                            listener.getLogger().println("Artifactory Deployer: Skipping the deployment of '" + artifactPath + "' due to the defined include-exclude patterns.");
+                            continue;
+                        }
+                        Map<String, String> checksums = FileChecksumCalculator.calculateChecksums(artifact.getFile(), SHA1, MD5);
+                        if (!checksums.get(SHA1).equals(artifact.getSha1())) {
+                            listener.error("SHA1 mismatch at '" + artifactPath + "' expected: " + artifact.getSha1() + ", got " + checksums.get(SHA1)
+                                    + ". Make sure that the same artifacts were not built more than once.");
+                            isSuccess = false;
+                        } else {
+                            DeployDetails.Builder builder = new DeployDetails.Builder()
+                                    .file(artifact.getFile())
+                                    .artifactPath(artifactPath)
+                                    .targetRepository(deployer.getTargetRepository(artifactPath))
+                                    .md5(checksums.get(MD5)).sha1(artifact.getSha1())
+                                    .addProperties(artifact.getProperties()).addProperties(deployer.getProperties());
+                            deployDetails.add(builder.build());
+                        }
                     }
-                    Map<String, String> checksums = FileChecksumCalculator.calculateChecksums(artifact.getFile(), SHA1, MD5);
-                    if (!checksums.get(SHA1).equals(artifact.getSha1())) {
-                        listener.error("SHA1 mismatch at '" + artifactPath + "' expected: " + artifact.getSha1() + ", got " + checksums.get(SHA1)
-                                + ". Make sure that the same artifacts were not built more than once.");
-                        isSuccess = false;
-                    } else {
-                        DeployDetails.Builder builder = new DeployDetails.Builder()
-                                .file(artifact.getFile())
-                                .artifactPath(artifactPath)
-                                .targetRepository(deployer.getTargetRepository(artifactPath))
-                                .md5(checksums.get(MD5)).sha1(artifact.getSha1())
-                                .addProperties(artifact.getProperties()).addProperties(deployer.getProperties());
-                        results.add(builder.build());
-                    }
+                    results.put(module, deployDetails);
+                } catch (NoSuchAlgorithmException e) {
+                    listener.error("Could not find checksum algorithm for " + SHA1 + " or " + MD5);
+                    isSuccess = false;
                 }
-            } catch (NoSuchAlgorithmException e) {
-                listener.error("Could not find checksum algorithm for " + SHA1 + " or " + MD5);
-                isSuccess = false;
             }
             return isSuccess ? results : null;
         }

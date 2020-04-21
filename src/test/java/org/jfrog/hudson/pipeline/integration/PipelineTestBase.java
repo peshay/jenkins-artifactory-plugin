@@ -1,7 +1,11 @@
 package org.jfrog.hudson.pipeline.integration;
 
 import hudson.EnvVars;
+import hudson.FilePath;
+import hudson.model.Label;
+import hudson.model.Slave;
 import hudson.slaves.EnvironmentVariablesNodeProperty;
+import org.apache.commons.io.FileUtils;
 import org.apache.commons.io.IOUtils;
 import org.apache.commons.lang.text.StrSubstitutor;
 import org.apache.commons.lang3.StringUtils;
@@ -18,15 +22,21 @@ import org.jfrog.artifactory.client.impl.ArtifactoryRequestImpl;
 import org.jfrog.build.api.util.NullLog;
 import org.jfrog.build.extractor.clientConfiguration.client.ArtifactoryBuildInfoClient;
 import org.junit.*;
+import org.junit.rules.TemporaryFolder;
 import org.junit.rules.TestName;
 import org.jvnet.hudson.test.JenkinsRule;
 
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.*;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Set;
+import java.util.stream.*;
 
 import static org.jfrog.hudson.pipeline.integration.ITestUtils.*;
 import static org.junit.Assert.fail;
@@ -38,20 +48,27 @@ public class PipelineTestBase {
 
     @ClassRule // The Jenkins instance
     public static JenkinsRule jenkins = new JenkinsRule();
-    private Logger log = LogManager.getRootLogger();
-    @Rule public TestName testName = new TestName();
+    static Slave slave;
+    private static Logger log = LogManager.getRootLogger();
+    @Rule
+    public TestName testName = new TestName();
+    @ClassRule
+    public static TemporaryFolder testTemporaryFolder = new TemporaryFolder();
 
+    private static final String SLAVE_LABEL = "TestSlave";
     private static final String ARTIFACTORY_URL = System.getenv("JENKINS_ARTIFACTORY_URL");
     private static final String ARTIFACTORY_USERNAME = System.getenv("JENKINS_ARTIFACTORY_USERNAME");
     private static final String ARTIFACTORY_PASSWORD = System.getenv("JENKINS_ARTIFACTORY_PASSWORD");
+    static final String JENKINS_XRAY_TEST_ENABLE = System.getenv("JENKINS_XRAY_TEST_ENABLE");
+    static final String JENKINS_DOCKER_TEST_ENABLE = System.getenv("JENKINS_DOCKER_TEST_ENABLE");
     static final Path FILES_PATH = getIntegrationDir().resolve("files").toAbsolutePath();
 
-    private static long currentTime = System.currentTimeMillis();
+    private static long currentTime;
     private static StrSubstitutor pipelineSubstitution;
     static ArtifactoryBuildInfoClient buildInfoClient;
     static Artifactory artifactoryClient;
 
-    private ClassLoader classLoader = PipelineTestBase.class.getClassLoader();
+    private static ClassLoader classLoader = PipelineTestBase.class.getClassLoader();
     PipelineType pipelineType;
 
     PipelineTestBase(PipelineType pipelineType) {
@@ -60,29 +77,50 @@ public class PipelineTestBase {
 
     @BeforeClass
     public static void setUp() {
+        currentTime = System.currentTimeMillis();
         verifyEnvironment();
+        createSlave();
         setJarsLibEnv();
         createClients();
         cleanUpArtifactory(artifactoryClient);
         createPipelineSubstitution();
+        // Create repositories
+        Arrays.stream(TestRepository.values()).forEach(PipelineTestBase::createRepo);
     }
 
     @Before
-    public void beforeTest() {
+    public void beforeTest() throws IOException {
         log.info("Running test: " + pipelineType + " / " + testName.getMethodName());
-        // Create repositories
-        Arrays.stream(TestRepository.values()).forEach(this::createRepo);
+        FileUtils.cleanDirectory(testTemporaryFolder.getRoot().getAbsoluteFile());
     }
 
     @After
-    public void deleteRepos() {
-        Arrays.stream(TestRepository.values()).forEach(repoName -> artifactoryClient.repository(getRepoKey(repoName)).delete());
+    public void cleanRepos() {
+        // Remove the content of all local repositories
+        Arrays.stream(TestRepository.values()).filter(repository -> repository.getRepoType() == TestRepository.RepoType.LOCAL)
+                .forEach(repository -> artifactoryClient.repository(getRepoKey(repository)).delete(StringUtils.EMPTY));
     }
 
     @AfterClass
     public static void tearDown() {
+        // Remove repositories - need to remove virtual repositories first
+        Stream.concat(
+                Arrays.stream(TestRepository.values()).filter(repository -> repository.getRepoType() == TestRepository.RepoType.VIRTUAL),
+                Arrays.stream(TestRepository.values()).filter(repository -> repository.getRepoType() != TestRepository.RepoType.VIRTUAL))
+                .forEach(repository -> artifactoryClient.repository(getRepoKey(repository)).delete());
         buildInfoClient.close();
         artifactoryClient.close();
+    }
+
+    /**
+     * Create jenkins slave. All tests should run on it.
+     */
+    private static void createSlave() {
+        try {
+            slave = jenkins.createOnlineSlave(Label.get(SLAVE_LABEL));
+        } catch (Exception e) {
+            fail(ExceptionUtils.getRootCauseMessage(e));
+        }
     }
 
     /**
@@ -100,14 +138,15 @@ public class PipelineTestBase {
      *
      * @param repository - The repository base name
      */
-    private void createRepo(TestRepository repository) {
+    private static void createRepo(TestRepository repository) {
         try {
             String repositorySettingsPath = Paths.get("integration", "settings", repository.getRepoName() + ".json").toString();
             InputStream inputStream = classLoader.getResourceAsStream(repositorySettingsPath);
             if (inputStream == null) {
                 throw new IOException(repositorySettingsPath + " not found");
             }
-            String repositorySettings = IOUtils.toString(inputStream, "UTF-8");
+            String repositorySettings = IOUtils.toString(inputStream, StandardCharsets.UTF_8);
+            repositorySettings = pipelineSubstitution.replace(repositorySettings);
             artifactoryClient.restCall(new ArtifactoryRequestImpl()
                     .method(ArtifactoryRequest.Method.PUT)
                     .requestType(ArtifactoryRequest.ContentType.JSON)
@@ -142,12 +181,17 @@ public class PipelineTestBase {
             put("GRADLE_PROJECT_PATH", getProjectPath("gradle-example"));
             put("GRADLE_CI_PROJECT_PATH", getProjectPath("gradle-example-ci"));
             put("NPM_PROJECT_PATH", getProjectPath("npm-example"));
+            put("GO_PROJECT_PATH", getProjectPath("go-example"));
             put("DOCKER_PROJECT_PATH", getProjectPath("docker-example"));
+            put("TEST_TEMP_FOLDER", fixWindowsPath(testTemporaryFolder.getRoot().getAbsolutePath()));
             put("LOCAL_REPO1", getRepoKey(TestRepository.LOCAL_REPO1));
             put("LOCAL_REPO2", getRepoKey(TestRepository.LOCAL_REPO2));
             put("JCENTER_REMOTE_REPO", getRepoKey(TestRepository.JCENTER_REMOTE_REPO));
             put("NPM_LOCAL", getRepoKey(TestRepository.NPM_LOCAL));
             put("NPM_REMOTE", getRepoKey(TestRepository.NPM_REMOTE));
+            put("GO_LOCAL", getRepoKey(TestRepository.GO_LOCAL));
+            put("GO_REMOTE", getRepoKey(TestRepository.GO_REMOTE));
+            put("GO_VIRTUAL", getRepoKey(TestRepository.GO_VIRTUAL));
         }});
     }
 
@@ -170,7 +214,11 @@ public class PipelineTestBase {
      */
     WorkflowRun runPipeline(String name) throws Exception {
         WorkflowJob project = jenkins.createProject(WorkflowJob.class);
-        jenkins.getInstance().getWorkspaceFor(project).mkdirs();
+        FilePath slaveWs = slave.getWorkspaceFor(project);
+        if (slaveWs == null) {
+            throw new Exception("Slave workspace not found");
+        }
+        slaveWs.mkdirs();
         project.setDefinition(new CpsFlowDefinition(readPipeline(name)));
         return jenkins.buildAndAssertSuccess(project);
     }
@@ -187,7 +235,7 @@ public class PipelineTestBase {
         if (inputStream == null) {
             throw new IOException(pipelinePath + " not found");
         }
-        String pipeline = IOUtils.toString(inputStream);
+        String pipeline = IOUtils.toString(inputStream, StandardCharsets.UTF_8);
         return pipelineSubstitution.replace(pipeline);
     }
 

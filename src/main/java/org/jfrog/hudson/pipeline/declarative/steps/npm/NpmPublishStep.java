@@ -17,8 +17,8 @@ import org.jfrog.hudson.pipeline.common.Utils;
 import org.jfrog.hudson.pipeline.common.executors.NpmPublishExecutor;
 import org.jfrog.hudson.pipeline.common.types.ArtifactoryServer;
 import org.jfrog.hudson.pipeline.common.types.buildInfo.BuildInfo;
-import org.jfrog.hudson.pipeline.common.types.deployers.NpmDeployer;
-import org.jfrog.hudson.pipeline.common.types.packageManagerBuilds.NpmBuild;
+import org.jfrog.hudson.pipeline.common.types.builds.NpmBuild;
+import org.jfrog.hudson.pipeline.common.types.deployers.NpmGoDeployer;
 import org.jfrog.hudson.pipeline.declarative.BuildDataFile;
 import org.jfrog.hudson.pipeline.declarative.utils.DeclarativePipelineUtils;
 import org.jfrog.hudson.util.BuildUniqueIdentifierHelper;
@@ -41,7 +41,9 @@ public class NpmPublishStep extends AbstractStepImpl {
     private String customBuildNumber;
     private String customBuildName;
     private String deployerId;
+    private String javaArgs; // Added to allow java remote debugging
     private String path;
+    private String module;
 
     @DataBoundConstructor
     public NpmPublishStep() {
@@ -64,8 +66,18 @@ public class NpmPublishStep extends AbstractStepImpl {
     }
 
     @DataBoundSetter
+    public void setJavaArgs(String javaArgs) {
+        this.javaArgs = javaArgs;
+    }
+
+    @DataBoundSetter
     public void setPath(String path) {
         this.path = path;
+    }
+
+    @DataBoundSetter
+    public void setModule(String module) {
+        this.module = module;
     }
 
     @DataBoundSetter
@@ -98,8 +110,8 @@ public class NpmPublishStep extends AbstractStepImpl {
         protected Void run() throws Exception {
             BuildInfo buildInfo = DeclarativePipelineUtils.getBuildInfo(ws, build, step.customBuildName, step.customBuildNumber);
             setDeployer(BuildUniqueIdentifierHelper.getBuildNumber(build));
-            String npmExe = Utils.getNpmExe(ws, listener, env, launcher, step.npmBuild.getTool());
-            NpmPublishExecutor npmPublishExecutor = new NpmPublishExecutor(getContext(), buildInfo, step.npmBuild, npmExe, step.path, ws, env, listener, build);
+            Utils.addNpmToPath(ws, listener, env, launcher, step.npmBuild.getTool());
+            NpmPublishExecutor npmPublishExecutor = new NpmPublishExecutor(listener, buildInfo, launcher, step.npmBuild, step.javaArgs, step.path, step.module, ws, env, build);
             npmPublishExecutor.execute();
             DeclarativePipelineUtils.saveBuildInfo(npmPublishExecutor.getBuildInfo(), ws, build, new JenkinsBuildInfoLog(listener));
             return null;
@@ -113,7 +125,7 @@ public class NpmPublishStep extends AbstractStepImpl {
             if (buildDataFile == null) {
                 throw new IOException("Deployer " + step.deployerId + " doesn't exist!");
             }
-            NpmDeployer deployer = Utils.mapper().treeToValue(buildDataFile.get(NpmDeployerStep.STEP_NAME), NpmDeployer.class);
+            NpmGoDeployer deployer = Utils.mapper().treeToValue(buildDataFile.get(NpmDeployerStep.STEP_NAME), NpmGoDeployer.class);
             deployer.setServer(getArtifactoryServer(buildNumber, buildDataFile));
             step.npmBuild.setDeployer(deployer);
             addProperties(buildDataFile);

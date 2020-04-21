@@ -3,6 +3,7 @@ package org.jfrog.hudson.pipeline.common.executors;
 import hudson.FilePath;
 import hudson.model.Run;
 import hudson.model.TaskListener;
+import org.apache.commons.lang.StringUtils;
 import org.jfrog.build.api.Dependency;
 import org.jfrog.hudson.ArtifactoryServer;
 import org.jfrog.hudson.CredentialsConfig;
@@ -10,6 +11,7 @@ import org.jfrog.hudson.generic.FilesResolverCallable;
 import org.jfrog.hudson.pipeline.common.Utils;
 import org.jfrog.hudson.pipeline.common.types.buildInfo.BuildInfo;
 import org.jfrog.hudson.pipeline.common.types.buildInfo.BuildInfoAccessor;
+import org.jfrog.hudson.util.Credentials;
 import org.jfrog.hudson.util.JenkinsBuildInfoLog;
 
 import java.io.IOException;
@@ -26,8 +28,9 @@ public class GenericDownloadExecutor implements Executor {
     private ArtifactoryServer server;
     private TaskListener listener;
     private String spec;
+    private String moduleName;
 
-    public GenericDownloadExecutor(ArtifactoryServer server, TaskListener listener, Run build, FilePath ws, BuildInfo buildInfo, String spec, boolean failNoOp) {
+    public GenericDownloadExecutor(ArtifactoryServer server, TaskListener listener, Run build, FilePath ws, BuildInfo buildInfo, String spec, boolean failNoOp, String moduleName) {
         this.build = build;
         this.server = server;
         this.listener = listener;
@@ -35,6 +38,7 @@ public class GenericDownloadExecutor implements Executor {
         this.failNoOp = failNoOp;
         this.ws = ws;
         this.spec = spec;
+        this.moduleName = moduleName;
     }
 
     public BuildInfo getBuildInfo() {
@@ -43,14 +47,14 @@ public class GenericDownloadExecutor implements Executor {
 
     public void execute() throws IOException, InterruptedException {
         CredentialsConfig preferredResolver = server.getDeployerCredentialsConfig();
+        Credentials resolverCredentials = preferredResolver.provideCredentials(build.getParent());
         List<Dependency> resolvedDependencies =
                 ws.act(new FilesResolverCallable(new JenkinsBuildInfoLog(listener),
-                        preferredResolver.provideUsername(build.getParent()),
-                        preferredResolver.providePassword(build.getParent()),
-                        server.getUrl(), spec, Utils.getProxyConfiguration(server)));
+                        resolverCredentials, server.getUrl(), spec, Utils.getProxyConfiguration(server)));
         if (failNoOp && resolvedDependencies.isEmpty()) {
             throw new RuntimeException("Fail-no-op: No files were affected in the download process.");
         }
-        new BuildInfoAccessor(this.buildInfo).appendPublishedDependencies(resolvedDependencies);
+        String moduleId = StringUtils.isNotBlank(moduleName) ? moduleName : buildInfo.getName();
+        new BuildInfoAccessor(this.buildInfo).appendDependencies(resolvedDependencies, moduleId);
     }
 }
